@@ -5,52 +5,85 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - principal
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Setup Android SDK
-  uses: android-actions/setup-android@v4
-  with:
-    packages: 'platform-tools'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-      - name: Install Android SDK
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Install Android platform and build tools
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Extract project
+      - name: Extract Android project ZIP
+        shell: bash
         run: |
-          ZIP=$(find . -maxdepth 1 -name '*.zip' | head -n 1)
-          test -n "$ZIP"
-          mkdir extracted
-          unzip -q "$ZIP" -d extracted
-          PROJECT=$(find extracted -name settings.gradle.kts -printf '%h\n' | head -n 1)
-          test -n "$PROJECT"
-          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" | head -n 1)
+
+          if [ -n "$ZIP_FILE" ]; then
+            echo "ZIP trouvé : $ZIP_FILE"
+            mkdir -p extracted
+            unzip -oq "$ZIP_FILE" -d extracted
+          else
+            echo "Aucun ZIP trouvé. Vérification du projet existant."
+          fi
+
+      - name: Find Android project
+        shell: bash
+        run: |
+          PROJECT_DIR=""
+
+          while IFS= read -r -d '' FILE; do
+            DIR=$(dirname "$FILE")
+
+            if [ -f "$DIR/app/build.gradle.kts" ] || [ -f "$DIR/app/build.gradle" ]; then
+              PROJECT_DIR="$DIR"
+              break
+            fi
+          done < <(find . -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) -not -path "./.git/*" -print0)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERREUR : projet Android avec module app introuvable."
+            exit 1
+          fi
+
+          echo "Projet trouvé : $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       - name: Build APK
         run: |
-          cd "$PROJECT_DIR"
-          gradle assembleDebug
+          gradle --no-daemon --stacktrace -p "$PROJECT_DIR" assembleDebug
 
       - name: Save APK
         uses: actions/upload-artifact@v4
         with:
           name: SKY-B-RADIO-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          path: '**/build/outputs/apk/debug/*.apk'
+          if-no-files-found: error
+          retention-days: 14
